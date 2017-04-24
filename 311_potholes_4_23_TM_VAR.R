@@ -469,7 +469,7 @@ sqrt(MSE) # 521
 # connect to API #
 devtools::install_github("ALShum/rwunderground") # download the package
 library(rwunderground)
-api_key <- set_api_key("bd6ee504abb96cbc")# set API key
+api_key <- set_api_key("INSERT KEY HERE")# set API key
 location <-  set_location(territory = "Massachusetts", city = "Boston")
 history(location, date = 20170228) # will pull one day
 history_daily(location, date = 20170228) # will pull one day
