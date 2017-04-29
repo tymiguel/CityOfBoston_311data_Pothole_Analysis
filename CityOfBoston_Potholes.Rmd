@@ -1,0 +1,268 @@
+---
+title: "CityOfBoston_Potholes"
+author: "Tyler Miguel, Vlad Kulakov, Cindy Lee"
+date: "4/29/2017"
+output: 
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This report summarizes the time series and methods used in forecasting the number of pothole repair requests the City of Boston will receive. The purpose of this report is to document the opportunities there are to use Box-Jenkins methods, specifically, ARIMA models, to model pothole repair requests to better enable public works departments to react and remedy unsatisfactory road conditions, decreasing the time from complaint to completion.
+
+According to the American Association of State Highway and Transportation Officials (AASHTO) “Smart Growth America, Repair Priorities 2014” it is estimated that every \$1 spent to keep a road in good condition saves about \$6 - \$14 that would be needed later to rebuild the same road after greater deterioration. Additionally, a 2016 survey conducted by the American Automobile Association (AAA) found that 15% of U.S. drivers (60 million people) have spent $15 billion over the last five years for vehicle repairs due to pothole damage. Furthermore, a driver that had experienced pothole damage that required car repair was more likely to have had it happen more than once, an average of three times in the last 5 years. 
+
+From the aforementioned facts, we deduced that potholes were generally clustered in the same spaces where the same motorists would be more likely to experience car damage and public works departments would be more likely to focus their improvement efforts. Therefore, we believe that using time series modeling to predict roadway defects that would need to be remedied by local municipalities could improve roadway conditions, decrease costs to motorists and government, and improve satisfaction rates of constituents.
+
+First we will load our packages.
+
+We will use:
+
+* `readr` to read in the data into R
+* `dplyr` to manipulate the data
+* `ggplot2` to visualize the data
+* `ggmap` to visualize map data
+* `forecast` time series analysis
+* `FinTS` time series analysis
+
+```{r, warning = FALSE, message = FALSE}
+library(readr)
+library(dplyr) 
+library(ggplot2)
+library(ggmap)
+library(forecast)
+library(FinTS)
+```
+
+# Loading data
+
+We extracted the data from the [Analyze Boston](https://data.boston.gov/) downloaded a CSV and loaded it into our working space.
+
+```{r, warning = FALSE, message = FALSE}
+data <- read_csv("/Users/tylermiguel/Desktop/311 Service Requests/311.csv")
+```
+
+# Intial data preparation
+
+Let's take a look at the timeframe of the data.
+
+```{r}
+paste(min(data$open_dt),"to",max(data$open_dt))
+```
+
+Our data includes all the 311 service requests from July 1, 2011 to April 25, 2017, inclusive. Since we are focusing on pothole requests, we will filter down our data.
+
+```{r pressure, echo=FALSE}
+data %>%
+  dplyr::filter(CASE_TITLE == 'Request for Pothole Repair') %>%
+  {.} -> public_works_ph
+```
+
+We have taken the number of cases from 992,767 to 42,987. Additioanlly, we will want to further simplify our data before modeling it. For instance, we can see that our data has duplicate records.
+
+```{r}
+public_works_ph %>%
+  dplyr::filter(grepl('dup|Dup', CLOSURE_REASON)) %>%
+  select(CLOSURE_REASON, CASE_TITLE)
+```
+ 
+Additionally, there are other records that we would like to remove because we don't believe they accurately count toward the number distinct pothole repair requests. 
+
+```{r}
+public_works_ph %>%
+  dplyr::filter(grepl('Noted', CLOSURE_REASON)) %>%
+  select(CLOSURE_REASON)
+```
+
+We will remove records with either of these below.
+
+```{r}
+public_works_ph %>%
+  dplyr::filter(!grepl('dup|Dup', CLOSURE_REASON)) %>%
+  dplyr::filter(!grepl('Noted', CLOSURE_REASON)) %>%
+  {.} -> pwph_clean
+```
+
+Additionally, we only want to consider records where the pothole was completed. Therefore, we will remove records where the `closed_dt` is `NA`.
+
+```{r}
+pwph_clean %>%
+  dplyr::filter(!is.na(closed_dt)) %>%
+  {.} -> pwph_clean
+```
+
+We will also create a new variable, `days_open`, that is represents the time taken to close a pothole after be notified one existed. Given that the time is a `POSIXct` object, the difference will be a `difftime` object represented in seconds. To account for this, we will transform that `days_open` variable to actually represent days, rather than seconds.
+
+```{r}
+pwph_clean %>%
+  mutate(days_open = closed_dt - open_dt) %>%
+  mutate(days_open_numeric_days = as.numeric(days_open/60/60/24)) %>%
+  {.} -> pwph_clean
+```
+
+# Data exploration
+
+We have decreased our intial million records down to just under 40,000.
+
+```{r}
+dim(pwph_clean)
+```
+
+From those records, we can see which districts account for the most potholes.
+
+```{r}
+pwph_clean %>%  
+  ggplot(aes(x=pwd_district)) +
+  geom_bar()
+```
+
+According to the data dictionary, Boston Proper and Charlestown are part of district 1. We can assume that the different letter and part of the same disctrict. And then comes Roxbury (if we combine 10A and 10B), and then Brighton (04). This makes sense, given the density of these areas, and the number of cars the travel in these areas.
+
+```{r}
+qmap('Roxbury', zoom = 12) +
+  geom_point(aes(x=Longitude, 
+                 y=Latitude, 
+                 color = 1), 
+             data=pwph_clean,
+             alpha=0.01)
+```
+
+The map above is shows the density of the potholes created in the City. The darker areas in the map indicate more potholes in the area. We can see that downtown Boston, Roxbury, and Brighton have the darker shaded areas.
+
+Requests can come from multiple areas sources, so we will examine the different sources that report potholes.
+
+
+```{r}
+pwph_clean %>%  
+  ggplot(aes(x=Source)) +
+  theme(axis.text.x=element_text(angle=45,hjust=1)) +
+  geom_bar(aes(fill=Source))
+```
+
+It appears that the City Worker App is responsible for the most amount of requests. Although, the City Worker App has the highest amount of requests, it is interesting to note that those records take the shortest time to complete.
+
+```{r}
+pwph_clean %>%
+  select(Source, days_open_numeric_days) %>%
+  group_by(Source) %>%
+  summarise(mean_days_to_fil = mean(days_open_numeric_days),
+            median_days_to_fil = median(days_open_numeric_days, na.rm=T),
+            count_of_potholes = n())
+```
+
+When considering all the potholes, the time it takes the fill (mean or median) is heavily weighted by the City Worker App. This could be because potholes are filled in clusters, or that data input is a bit off, at this point, it is not easy be certain. However, it is clear that reaction time from a request by a constienut is around 5 days on average.
+
+# Time Series Analysis
+
+We will move forward to create a time series model that will allow us to forecast the number of pothole repair requets submitted to the City. First we will extract the time data and set up our training, validation and test sets.
+
+## TS data prep
+
+We will extract the number of potholes created by month to build a time series object.
+
+```{r}
+g_pw_ph <- pwph_clean[,2] 
+g_pw_ph <- format(g_pw_ph$open_dt, "%Y-%m")
+g_pw_ph <- data.frame(date = g_pw_ph)
+
+g_pw_ph %>%
+  group_by(date) %>%
+  summarise(count = n()) %>%
+  {.} -> g_pw_ph
+
+```
+
+We will split the data into three segments. We will train our model using the data from July 2011 to September 2016, validate our model on predictions from October 2016 to February 2017, and subsequently predict March 2017.
+
+```{r}
+monthly_ph_ts <- ts(g_pw_ph$count, start = c(2011, 7), frequency = 12)
+monthly_ts_train <- window(monthly_ph_ts, start = c(2011, 7), end = c(2016,9) , frequency = 12)
+monthly_ts_val <- window(monthly_ph_ts, start = c(2016, 10), end = c(2017,2) , frequency = 12)
+monthly_ts_test <- window(monthly_ph_ts, start = c(2017, 3), end = c(2017,3) , frequency = 12)
+```
+
+## TS data explortation
+
+First will will start by looking at the training set.
+
+```{r}
+tsdisplay(monthly_ts_train)
+```
+
+It appears that our data is not-stationary, given that that variance does not look constant and there appears to be a positive upward trend indicating that we have a non-zero mean.
+
+Examining the ACF and PACF, we can see that there is significant autocorrelation in the ACF, and we can also see a signficant spike at lag 1 of the PACF, but then the remainig lags appears to be within the zero zone.
+
+If we difference that data, we can get a contastant mean, but there seems to still be an issue with the variance, noted by the variability in 2015, which conicides with the record breaking snow storm we had in Boston that year. 
+
+```{r}
+tsdisplay(diff(monthly_ts_train))
+```
+
+We can see that the ACF and PACF seem to be better given that there is little to no-autocorreltation, however, we don't see a spike at lag 1 for either the ACF or the PACF.
+
+The log of the series below doesn't look any better, and we will not move forward with the log of the series.
+
+```{r}
+tsdisplay(diff(log(monthly_ts_train)))
+```
+
+Taking the seasonal difference and the first-order difference appears to look better than the log, however, we are not convinced at this point.
+
+```{r}
+tsdisplay(diff(diff(monthly_ts_train, lag=12))) 
+```
+
+## TS Modeling
+
+We will start by using the `auto.arima` function, and the move into building other ARIMA models.
+
+```{r}
+arima = auto.arima(monthly_ts_train, stationary = FALSE, ic="aic")
+arima
+```
+
+The `auto.arima` function resulted in a model with a ARIMA(0,0,1)(1,0,0)[12] with non-zero mean model with an AIC of 892.96. The diagnositcs appear to be good, with no signficaant lags, given by the ACF plot and the plot of the p-values for the Ljung-Box statistic.
+
+```{r}
+tsdiag(arima) 
+```
+
+THis model appears to take no difference of the data, however, this conflicts with our intial thought of our increasing trend. Below we will examine 10 or so other models that take the first-order difference and seasonal difference.
+
+```{r}
+arima2 = arima(monthly_ts_train, order=c(0,1,0),seasonal=list(order=c(0,1,0),period=12))
+arima3 = arima(monthly_ts_train, order=c(2,1,2),seasonal=list(order=c(1,1,1),period=12))
+arima4 = arima(monthly_ts_train, order=c(1,1,0),seasonal=list(order=c(1,1,0),period=12))
+arima5 = arima(monthly_ts_train, order=c(0,1,1),seasonal=list(order=c(0,1,1),period=12))
+arima6 = arima(monthly_ts_train, order=c(1,1,0),seasonal=list(order=c(0,1,1),period=12))
+arima7 = arima(monthly_ts_train, order=c(1,1,1),seasonal=list(order=c(1,1,1),period=12))
+arima8 = arima(monthly_ts_train, order=c(0,0,1),seasonal=list(order=c(0,1,1),period=12))
+arima9 = arima(monthly_ts_train, order=c(1,1,0),seasonal=list(order=c(0,1,0),period=12))
+```
+
+We can now examine the AIC of the models.
+
+```{r}
+arima_models = list(arima, arima2, arima3, arima4, arima5, arima6, arima7, arima8, arima9)
+for (model in arima_models) {
+  print(paste(AIC(model), BIC(model)))
+}
+```
+
+We can see that the 7th model (`arima7`) has the lowest AIC and BIC. Although this goes against our `auto.arima` we do believe we noticed an increasing trend. We can further disect this with other statistical methods such as the KPSS test, Dickey-Fuller test, and Phillips–Perron test, however, we will move forward with the the model with the lowest AIC/BIC, `arima7`.
+
+## TS Model diagnostics
+
+We will examine the diagnostics of the residuals from our model to see if they statisfy our assumptions.
+
+```{r}
+tsdisplay(arima7$residuals)
+```
+
+We can see from the ACF and PACF that the series of the residuals appear to be white noise, that is, we do not see serial correlation in our residuals. There are a couple of signifcant lags, however, we can possibly attribute this to noise in our training set.
