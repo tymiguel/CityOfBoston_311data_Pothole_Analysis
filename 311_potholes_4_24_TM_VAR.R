@@ -29,7 +29,8 @@ library(forecast)
 library(dplyr) # manipulate data
 library(ggmap) # to get this, you need to use install.packages("ggmap", type = "source")
 
-library(fGarch) # don't load until needed
+library(fGarch) # don't load un
+til needed
 library(FinTS)
 
 library(zoo) # might need this for time series manipulation
@@ -560,8 +561,15 @@ lines(co_val_arima7$pred[1:5]-co_val_arima7$se[1:5]*1.96, type='l', col="red", l
 # connect to API #
 devtools::install_github("ALShum/rwunderground") # download the package
 library(rwunderground)
-api_key <- set_api_key("bd6ee504abb96cbc")# set API key
-location <-  set_location(territory = "Massachusetts", city = "Boston")
+api_key <- set_api_key("# insert api key")# set API key
+location <-  set_location(territory = "Massac
+
+
+
+
+
+
+husetts", city = "Boston")
 history(location, date = 20170228) # will pull one day
 history_daily(location, date = 20170228) # will pull one day
 
